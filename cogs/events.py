@@ -97,6 +97,17 @@ class EventsCog(commands.Cog, name="Events"):
             await interaction.response.send_message("❌ Invalid time format. Use: `15/3/26, 9:41 PM`", ephemeral=True)
             return
 
+        now = int(time.time())
+        if start_ts < now:
+            await interaction.response.send_message("❌ Start time cannot be in the past.", ephemeral=True)
+            return
+        if end_ts <= start_ts:
+            await interaction.response.send_message("❌ End time must be after start time.", ephemeral=True)
+            return
+        if team_size < 0:
+            await interaction.response.send_message("❌ Team size cannot be negative.", ephemeral=True)
+            return
+
         start_display = datetime.fromtimestamp(start_ts).strftime("%b %d, %Y %I:%M %p")
         end_display   = datetime.fromtimestamp(end_ts).strftime("%b %d, %Y %I:%M %p")
 
