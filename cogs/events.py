@@ -20,6 +20,7 @@ class EventView(discord.ui.View):
         self.end_ts     = end_ts
         self.interested_button.custom_id = f"interested_{event_id}"
         self.captain_button.custom_id    = f"captain_{event_id}"
+        self.withdraw_button.custom_id   = f"withdraw_{event_id}"
 
     async def _handle_register(self, interaction, role):
         if int(time.time()) > self.start_ts:
@@ -65,6 +66,36 @@ class EventView(discord.ui.View):
     async def captain_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_register(interaction, "captain")
 
+    @discord.ui.button(label="❌ Withdraw", style=discord.ButtonStyle.red, custom_id="withdraw_placeholder")
+    async def withdraw_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if int(time.time()) > self.start_ts:
+            await interaction.response.send_message("❌ Registration is closed, event has already started.", ephemeral=True)
+            return
+
+        async with get_db() as db:
+            cur = await db.execute("SELECT role FROM event_users WHERE event_id=? AND user_id=?", (self.event_id, interaction.user.id))
+            existing = await cur.fetchone()
+            if not existing:
+                await interaction.response.send_message("You are not registered for this event.", ephemeral=True)
+                return
+
+            await db.execute("DELETE FROM event_users WHERE event_id=? AND user_id=?", (self.event_id, interaction.user.id))
+            await db.commit()
+
+            cur = await db.execute("SELECT COUNT(*) FROM event_users WHERE event_id=? AND role='interested'", (self.event_id,))
+            interested_count = (await cur.fetchone())[0]
+            cur = await db.execute("SELECT COUNT(*) FROM event_users WHERE event_id=? AND role='captain'", (self.event_id,))
+            captain_count = (await cur.fetchone())[0]
+
+        embed = interaction.message.embeds[0]
+        for i, field in enumerate(embed.fields):
+            if field.name == "Interested Players":
+                embed.set_field_at(i, name="Interested Players", value=str(interested_count), inline=False)
+            elif field.name == "Captain Applications":
+                embed.set_field_at(i, name="Captain Applications", value=str(captain_count), inline=False)
+
+        await interaction.response.send_message("✅ Registration withdrawn.", ephemeral=True)
+        await interaction.message.edit(embed=embed)
 
 class EventsCog(commands.Cog, name="Events"):
     def __init__(self, bot):
