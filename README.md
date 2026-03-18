@@ -95,9 +95,12 @@ pip install -r requirements.txt
 
 1. In the root `void-bot` directory, create a file named `.env`:
    - **Linux/macOS:** `nano .env`
-2. Add the following line to the file, replacing the placeholder with your actual Discord Bot Token:
+2. Add the following lines to the file, replacing the placeholder with your actual Discord Bot Token:
 ```ini
 TOKEN=your_super_secret_discord_bot_token_here
+APPLICATION_CHANNEL_ID=Channel_ID
+PROOF_LOG_CHANNEL_ID=Channel_ID
+AUDIT_LOG_CHANNEL_ID=Channel_ID
 ```
 3. Save and close the file. Make sure `.env` is listed in your `.gitignore` file.
 
