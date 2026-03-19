@@ -1,7 +1,17 @@
 import aiosqlite
 import os
+from contextlib import asynccontextmanager
+
 os.makedirs("data", exist_ok=True)
 DB = "data/void.db"
+
+
+@asynccontextmanager
+async def get_db():
+    async with aiosqlite.connect(DB) as db:
+        db.row_factory = aiosqlite.Row
+        yield db
+
 
 async def setup_database():
     async with aiosqlite.connect(DB) as db:
