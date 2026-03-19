@@ -102,7 +102,7 @@ class EventsCog(commands.Cog, name="Events"):
         self.bot = bot
 
     @app_commands.command(name="event_registration", description="Create a CTF event")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=False)
     @app_commands.describe(
         name="Name of the CTF event",
         start_time='Start time — e.g. "15/3/26, 9:41 PM"',
@@ -164,6 +164,103 @@ class EventsCog(commands.Cog, name="Events"):
         embed.add_field(name="Captain Applications", value="0", inline=False)
 
         await interaction.response.send_message(embed=embed, view=view)
+
+
+    @app_commands.command(name="manage_event", description="Send event access details to players")
+    @app_commands.checks.has_permissions(administrator=False)
+    @app_commands.describe(
+        mode="Choose how players will join the event",
+        event_id="Select the event",
+        event_name="Name of the event",
+        captain="Captain of the team",
+        players="Mention players separated by space",
+        team_name="Team name (for credential mode)",
+        team_password="Team password (for credential mode)",
+        invite_link="Invite link (for invite mode)"
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Team Credentials", value="team"),
+        app_commands.Choice(name="Invite Link", value="invite")
+    ])
+    async def manage_event(
+        self,
+        interaction: discord.Interaction,
+        mode: str,
+        event_id: int,
+        captain: discord.Member,
+        players: str,
+        team_name: str = None,
+        event_name: str = None,
+        team_password: str = None,
+        invite_link: str = None
+    ):
+        if mode == "team" and not (team_name and team_password):
+            await interaction.response.send_message("❌ Credential mode requires both `team_name` and `team_password`.", ephemeral=True)
+            return
+        if mode == "invite" and not invite_link:
+            await interaction.response.send_message("❌ Invite mode requires an `invite_link`.", ephemeral=True)
+            return
+
+        user_ids = [int(uid) for uid in SNOWFLAKE_RE.findall(players)]
+        if not user_ids:
+            await interaction.response.send_message("❌ No valid Discord mentions found in `players`.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("Sending team information...", ephemeral=True)
+
+        success = failed = 0
+        async with get_db() as db:
+            for uid in user_ids:
+                member = interaction.guild.get_member(uid)
+                if not member:
+                    failed += 1
+                    continue
+                try:
+                    if mode == "team":
+                        embed = discord.Embed(title="⚔️ CTF Team Assignment", color=0x00ffcc)
+                        embed.add_field(name="Event", value=event_name or str(event_id), inline=False)
+                        embed.add_field(name="Team Name", value=team_name, inline=False)
+                        embed.add_field(name="Team Password", value=f"||{team_password}||", inline=False)
+                        embed.add_field(name="Captain", value=captain.mention, inline=False)
+                    else:
+                        embed = discord.Embed(title="⚔️ CTF Event Invitation", color=0x00ffcc)
+                        embed.add_field(name="Event", value=event_name or str(event_id), inline=False)
+                        embed.add_field(name="Invite Link", value=invite_link, inline=False)
+                        embed.add_field(name="Captain", value=captain.mention, inline=False)
+
+                    await member.send(embed=embed)
+                    await db.execute("INSERT OR IGNORE INTO event_selected(event_id, user_id) VALUES (?,?)", (event_id, uid))
+                    success += 1
+                except discord.Forbidden:
+                    log.warning("Can't DM %s — DMs are closed", uid)
+                    failed += 1
+                except Exception as e:
+                    log.error("DM to %s failed: %s", uid, e)
+                    failed += 1
+            await db.commit()
+
+        await interaction.followup.send(f"✅ Sent to {success} players\n❌ Failed: {failed}", ephemeral=True)
+        self.bot.dispatch(
+            "audit_log", "DEPLOY_CREDENTIALS", interaction.user,
+            f"Mode: `{mode}` · Event ID: `{event_id}` · Captain: {captain.mention} · "
+            f"Sent: {success} · Failed: {failed}"
+        )
+
+    @manage_event.autocomplete("event_id")
+    async def manage_event_autocomplete(self, interaction: discord.Interaction, current: str):
+        now = int(time.time())
+        async with get_db() as db:
+            cur = await db.execute("SELECT id, name FROM events WHERE end_ts >= ? ORDER BY start_ts DESC", (now,))
+            rows = await cur.fetchall()
+        return [
+            app_commands.Choice(name=f"{r['name']} (ID: {r['id']})", value=r["id"])
+            for r in rows if current.lower() in r["name"].lower()
+        ][:25]
+
+    @manage_event.error
+    async def manage_event_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(EventsCog(bot))
