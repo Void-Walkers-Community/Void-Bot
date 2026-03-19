@@ -329,5 +329,28 @@ class EventsCog(commands.Cog, name="Events"):
 
         self.bot.dispatch("dashboard_refresh")
 
+    
+    @app_commands.command(name="delete_event", description="Delete a CTF event")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(event_id="Select the event to delete")
+    async def delete_event(self, interaction: discord.Interaction, event_id: int):
+        async with get_db() as db:
+            cur = await db.execute("SELECT name FROM events WHERE id=?", (event_id,))
+            row = await cur.fetchone()
+            if not row:
+                await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+                return
+            event_name = row["name"]
+
+            for table in ("event_users", "event_selected", "clock_sessions", "activity_proofs", "player_stats"):
+                await db.execute(f"DELETE FROM {table} WHERE event_id=?", (event_id,))
+            await db.execute("DELETE FROM events WHERE id=?", (event_id,))
+            await db.commit()
+
+        await interaction.response.send_message(f"✅ Event **{event_name}** and all related data deleted.", ephemeral=True)
+
+        self.bot.dispatch("audit_log", "DELETE_EVENT", interaction.user, f"Deleted **{event_name}** (ID: `{event_id}`) — all records purged")
+        self.bot.dispatch("dashboard_refresh")
+
 async def setup(bot):
     await bot.add_cog(EventsCog(bot))
