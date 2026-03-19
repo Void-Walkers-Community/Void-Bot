@@ -102,7 +102,7 @@ class EventsCog(commands.Cog, name="Events"):
         self.bot = bot
 
     @app_commands.command(name="event_registration", description="Create a CTF event")
-    @app_commands.checks.has_permissions(administrator=False)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         name="Name of the CTF event",
         start_time='Start time — e.g. "15/3/26, 9:41 PM"',
@@ -144,8 +144,7 @@ class EventsCog(commands.Cog, name="Events"):
 
         async with get_db() as db:
             cur = await db.execute(
-                "INSERT INTO events(name,start_time,end_time,start_ts,end_ts,team_size,ctftime_link,channel_id) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO events(name,start_time,end_time,start_ts,end_ts,team_size,ctftime_link,channel_id) VALUES (?,?,?,?,?,?,?,?)",
                 (name, start_time, end_time, start_ts, end_ts, team_size, ctftime_link, discussion_channel.id)
             )
             event_id = cur.lastrowid
@@ -167,7 +166,7 @@ class EventsCog(commands.Cog, name="Events"):
 
 
     @app_commands.command(name="manage_event", description="Send event access details to players")
-    @app_commands.checks.has_permissions(administrator=False)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         mode="Choose how players will join the event",
         event_id="Select the event",
@@ -261,6 +260,74 @@ class EventsCog(commands.Cog, name="Events"):
     async def manage_event_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.errors.MissingPermissions):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+
+    @app_commands.command(name="edit_event", description="Edit a CTF event")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        event_id="Select the event to edit",
+        name="New name",
+        start_time="New start time e.g. 3/21/26, 6:00 PM",
+        end_time="New end time e.g. 3/22/26, 6:00 PM",
+        team_size="New team size (0 = unlimited)",
+        ctftime_link="New CTFTime link"
+    )
+    async def edit_event(
+        self,
+        interaction: discord.Interaction,
+        event_id: int,
+        name: str = None,
+        start_time: str = None,
+        end_time: str = None,
+        team_size: int = None,
+        ctftime_link: str = None
+    ):
+        if ctftime_link and not CTFTIME_RE.match(ctftime_link):
+            await interaction.response.send_message("❌ CTFTime link must start with `https://ctftime.org/`.", ephemeral=True)
+            return
+
+        async with get_db() as db:
+            cur = await db.execute("SELECT name, start_time, end_time, start_ts, end_ts, team_size, ctftime_link FROM events WHERE id=?", (event_id,))
+            row = await cur.fetchone()
+            if not row:
+                await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+                return
+
+            new_name      = name or row["name"]
+            new_team_size = team_size if team_size is not None else row["team_size"]
+            new_ctftime   = ctftime_link or row["ctftime_link"]
+
+            if new_team_size < 0:
+                await interaction.response.send_message("❌ Team size cannot be negative.", ephemeral=True)
+                return
+
+            try:
+                new_start_ts   = parse_time(start_time) if start_time else row["start_ts"]
+                new_start_time = start_time or row["start_time"]
+            except ValueError as e:
+                await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+                return
+
+            try:
+                new_end_ts   = parse_time(end_time) if end_time else row["end_ts"]
+                new_end_time = end_time or row["end_time"]
+            except ValueError as e:
+                await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+                return
+
+            if new_end_ts <= new_start_ts:
+                await interaction.response.send_message("❌ End time must be after start time.", ephemeral=True)
+                return
+
+            await db.execute(
+                "UPDATE events SET name=?, start_time=?, end_time=?, start_ts=?, end_ts=?, team_size=?, ctftime_link=? WHERE id=?",
+                (new_name, new_start_time, new_end_time, new_start_ts, new_end_ts, new_team_size, new_ctftime, event_id)
+            )
+            await db.commit()
+
+        await interaction.response.send_message(f"✅ Event **{new_name}** updated successfully!", ephemeral=True)
+        self.bot.dispatch("audit_log", "EDIT_EVENT", interaction.user, f"Updated **{new_name}** (ID: `{event_id}`)")
+
+        self.bot.dispatch("dashboard_refresh")
 
 async def setup(bot):
     await bot.add_cog(EventsCog(bot))
