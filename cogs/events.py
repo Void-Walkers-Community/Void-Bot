@@ -102,7 +102,7 @@ class EventsCog(commands.Cog, name="Events"):
         self.bot = bot
 
     @app_commands.command(name="event_registration", description="Create a CTF event")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=False)
     @app_commands.describe(
         name="Name of the CTF event",
         start_time='Start time — e.g. "15/3/26, 9:41 PM"',
@@ -166,7 +166,7 @@ class EventsCog(commands.Cog, name="Events"):
 
 
     @app_commands.command(name="manage_event", description="Send event access details to players")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=False)
     @app_commands.describe(
         mode="Choose how players will join the event",
         event_id="Select the event",
@@ -262,7 +262,7 @@ class EventsCog(commands.Cog, name="Events"):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
 
     @app_commands.command(name="edit_event", description="Edit a CTF event")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=False)
     @app_commands.describe(
         event_id="Select the event to edit",
         name="New name",
@@ -331,7 +331,7 @@ class EventsCog(commands.Cog, name="Events"):
 
     
     @app_commands.command(name="delete_event", description="Delete a CTF event")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=False)
     @app_commands.describe(event_id="Select the event to delete")
     async def delete_event(self, interaction: discord.Interaction, event_id: int):
         async with get_db() as db:
@@ -351,6 +351,25 @@ class EventsCog(commands.Cog, name="Events"):
 
         self.bot.dispatch("audit_log", "DELETE_EVENT", interaction.user, f"Deleted **{event_name}** (ID: `{event_id}`) — all records purged")
         self.bot.dispatch("dashboard_refresh")
+
+
+    @edit_event.autocomplete("event_id")
+    async def edit_event_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._all_events_choices(current)
+
+    @delete_event.autocomplete("event_id")
+    async def delete_event_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._all_events_choices(current)
+
+    async def _all_events_choices(self, current):
+        async with get_db() as db:
+            cur = await db.execute("SELECT id, name FROM events ORDER BY start_ts DESC")
+            rows = await cur.fetchall()
+        return [
+            app_commands.Choice(name=f"{r['name']} (ID: {r['id']})", value=r["id"])
+            for r in rows if current.lower() in r["name"].lower()
+        ][:25]
+
 
 async def setup(bot):
     await bot.add_cog(EventsCog(bot))
