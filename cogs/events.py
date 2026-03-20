@@ -21,7 +21,6 @@ def parse_time(time_str: str) -> int:
     except ValueError:
         raise ValueError(f"Invalid time format. Use: `15/3/26, 9:41 PM`")
 
-
 class EventView(discord.ui.View):
     def __init__(self, event_id, event_name, start_ts, end_ts):
         super().__init__(timeout=None)
