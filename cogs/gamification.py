@@ -31,6 +31,14 @@ async def _upsert_proof(db, user_id, event_id):
     else:
         await db.execute("INSERT INTO player_stats(user_id, event_id, proof_count) VALUES (?,?,1)", (user_id, event_id))
 
+async def _dm(bot, user_id, *, text=None, embed=None):
+    try:
+        user = await bot.fetch_user(user_id)
+        await user.send(content=text, embed=embed)
+    except (discord.Forbidden, discord.NotFound):
+        pass
+    except Exception as e:
+        log.error("DM to %s failed: %s", user_id, e)
 
 class GamificationCog(commands.Cog, name="Gamification"):
     def __init__(self, bot):
@@ -174,6 +182,94 @@ class GamificationCog(commands.Cog, name="Gamification"):
             f"Keep it up! Next proof in 1 hour. 🔥",
             ephemeral=True
         )
+    
+    @app_commands.command(name="stats", description="Check your CTF activity stats")
+    @app_commands.describe(event_id="Select the event")
+    async def stats(self, interaction: discord.Interaction, event_id: int):
+        async with get_db() as db:
+            cur = await db.execute("SELECT name FROM events WHERE id=?", (event_id,))
+            event = await cur.fetchone()
+            if not event:
+                await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+                return
+            event_name = event["name"]
+
+            cur = await db.execute("SELECT total_minutes, proof_count FROM player_stats WHERE user_id=? AND event_id=?", (interaction.user.id, event_id))
+            stats_row = await cur.fetchone()
+            if not stats_row:
+                await interaction.response.send_message("❌ No activity found for this event.", ephemeral=True)
+                return
+
+            cur = await db.execute("SELECT challenge_type, COUNT(*) FROM activity_proofs WHERE user_id=? AND event_id=? GROUP BY challenge_type", (interaction.user.id, event_id))
+            challenge_breakdown = await cur.fetchall()
+
+            cur = await db.execute("SELECT COUNT(*) FROM clock_sessions WHERE user_id=? AND event_id=?", (interaction.user.id, event_id))
+            session_count = (await cur.fetchone())[0]
+
+        hours, mins = divmod(stats_row["total_minutes"], 60)
+        embed = discord.Embed(
+            title=f"📊 Stats — {interaction.user.display_name}",
+            description=f"Event: **{event_name}**",
+            color=0x00ffcc
+        )
+        embed.add_field(name="Total Active Time", value=f"{hours}h {mins}m", inline=True)
+        embed.add_field(name="Proofs Submitted",  value=str(stats_row["proof_count"]), inline=True)
+        embed.add_field(name="Sessions",          value=str(session_count), inline=True)
+        if challenge_breakdown:
+            breakdown_text = "\n".join(f"{ctype}: {count}" for ctype, count in challenge_breakdown)
+            embed.add_field(name="Challenge Breakdown", value=breakdown_text, inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @stats.autocomplete("event_id")
+    async def stats_event_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._event_choices(current)
+
+    @app_commands.command(name="leaderboard", description="See activity leaderboard for an event")
+    @app_commands.describe(event_id="Select the event")
+    async def leaderboard(self, interaction: discord.Interaction, event_id: int):
+        async with get_db() as db:
+            cur = await db.execute("SELECT name FROM events WHERE id=?", (event_id,))
+            event = await cur.fetchone()
+            if not event:
+                await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+                return
+            event_name = event["name"]
+
+            cur = await db.execute("SELECT user_id, total_minutes, proof_count FROM player_stats WHERE event_id=? ORDER BY total_minutes DESC, proof_count DESC LIMIT 25", (event_id,))
+            players = await cur.fetchall()
+
+        if not players:
+            await interaction.response.send_message("❌ No activity data for this event yet.", ephemeral=True)
+            return
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, row in enumerate(players):
+            hours, mins = divmod(row["total_minutes"], 60)
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            try:
+                user = await self.bot.fetch_user(row["user_id"])
+                name = user.display_name
+            except (discord.NotFound, discord.HTTPException):
+                name = f"User {row['user_id']}"
+            lines.append(f"{medal} **{name}** — {hours}h {mins}m | {row['proof_count']} proofs")
+
+        embed = discord.Embed(title=f"🏆 Leaderboard — {event_name}", color=0x00ffcc)
+        embed.add_field(name="Rankings", value="\n".join(lines), inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @leaderboard.autocomplete("event_id")
+    async def leaderboard_event_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._event_choices(current)
+
+    async def _event_choices(self, current):
+        async with get_db() as db:
+            cur = await db.execute("SELECT id, name FROM events ORDER BY start_ts DESC")
+            rows = await cur.fetchall()
+        return [
+            app_commands.Choice(name=f"{r['name']} (ID: {r['id']})", value=r["id"])
+            for r in rows if current.lower() in r["name"].lower()
+        ][:25]
 
 async def setup(bot):
     await bot.add_cog(GamificationCog(bot))
