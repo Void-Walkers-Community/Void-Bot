@@ -1,13 +1,18 @@
+import io
 import logging
 import time
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from config import PROOF_LOG_CHANNEL_ID
 from database import get_db
 
 log = logging.getLogger(__name__)
+
+MAX_IMAGE_SIZE = 8 * 1024 * 1024
 
 
 async def _upsert_minutes(db, user_id, event_id, minutes):
@@ -16,6 +21,15 @@ async def _upsert_minutes(db, user_id, event_id, minutes):
         await db.execute("UPDATE player_stats SET total_minutes=total_minutes+? WHERE user_id=? AND event_id=?", (minutes, user_id, event_id))
     else:
         await db.execute("INSERT INTO player_stats(user_id, event_id, total_minutes) VALUES (?,?,?)", (user_id, event_id, minutes))
+
+
+async def _upsert_proof(db, user_id, event_id):
+    cur = await db.execute("SELECT 1 FROM player_stats WHERE user_id=? AND event_id=?", (user_id, event_id))
+    if await cur.fetchone():
+        await db.execute(
+            "UPDATE player_stats SET proof_count=proof_count+1 WHERE user_id=? AND event_id=?", (user_id, event_id))
+    else:
+        await db.execute("INSERT INTO player_stats(user_id, event_id, proof_count) VALUES (?,?,1)", (user_id, event_id))
 
 
 class GamificationCog(commands.Cog, name="Gamification"):
@@ -34,10 +48,7 @@ class GamificationCog(commands.Cog, name="Gamification"):
 
             event_id, event_name = event["id"], event["name"]
 
-            cur = await db.execute(
-                "SELECT 1 FROM event_selected WHERE event_id=? AND user_id=?",
-                (event_id, interaction.user.id)
-            )
+            cur = await db.execute("SELECT 1 FROM event_selected WHERE event_id=? AND user_id=?", (event_id, interaction.user.id))
             if not await cur.fetchone():
                 await interaction.response.send_message("❌ You are not part of this event's team.", ephemeral=True)
                 return
@@ -79,6 +90,90 @@ class GamificationCog(commands.Cog, name="Gamification"):
         hours, mins = divmod(total_minutes, 60)
         await interaction.response.send_message(f"✅ Clocked out!\n⏱️ Active time this session: **{hours}h {mins}m**", ephemeral=True)
 
+    
+    @app_commands.command(name="proof", description="Submit proof of your CTF activity")
+    @app_commands.describe(
+        challenge_type="Type of challenge you are working on",
+        screenshot="Screenshot of your progress"
+    )
+    @app_commands.choices(challenge_type=[
+        app_commands.Choice(name="Web",                 value="web"),
+        app_commands.Choice(name="OSINT",               value="osint"),
+        app_commands.Choice(name="Exploit/PWN",         value="exploit"),
+        app_commands.Choice(name="Reverse Engineering", value="rev"),
+        app_commands.Choice(name="Cryptography",        value="crypto"),
+        app_commands.Choice(name="Other",               value="other")
+    ])
+    async def proof(
+        self,
+        interaction: discord.Interaction,
+        challenge_type: str,
+        screenshot: discord.Attachment
+    ):
+        if not (screenshot.content_type or "").startswith("image/"):
+            await interaction.response.send_message("❌ Please upload an image file.", ephemeral=True)
+            return
+
+        if screenshot.size > MAX_IMAGE_SIZE:
+            await interaction.response.send_message("❌ Image is too large (max 8 MB).", ephemeral=True)
+            return
+
+        now = int(time.time())
+        await interaction.response.defer(ephemeral=True)
+
+        async with get_db() as db:
+            cur = await db.execute("SELECT id, event_id FROM clock_sessions WHERE user_id=? AND is_active=1", (interaction.user.id,))
+            session = await cur.fetchone()
+            if not session:
+                await interaction.followup.send("❌ You are not clocked in. Use `/clockin` first.", ephemeral=True)
+                return
+
+            session_id = session["id"]
+            event_id   = session["event_id"]
+
+            cur = await db.execute("SELECT 1 FROM activity_proofs WHERE session_id=? AND submitted_at >= ?", (session_id, now - 3600))
+            if await cur.fetchone():
+                await interaction.followup.send("⚠️ You already submitted proof in the last hour. Wait for the next ping!", ephemeral=True)
+                return
+
+            await db.execute(
+                "INSERT INTO activity_proofs"
+                "(session_id, user_id, event_id, proof_url, challenge_type, submitted_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (session_id, interaction.user.id, event_id, screenshot.url, challenge_type, now)
+            )
+            await _upsert_proof(db, interaction.user.id, event_id)
+            await db.commit()
+
+        proof_log_channel = self.bot.get_channel(PROOF_LOG_CHANNEL_ID)
+        if proof_log_channel:
+            try:
+                async with aiohttp.ClientSession() as http:
+                    async with http.get(screenshot.url) as resp:
+                        resp.raise_for_status()
+                        image_data = await resp.read()
+
+                log_msg = await proof_log_channel.send(
+                    f"📸 **Proof Log**\nUser: {interaction.user.mention}\n"
+                    f"Challenge: **{challenge_type}**\nEvent ID: `{event_id}`",
+                    file=discord.File(fp=io.BytesIO(image_data), filename=screenshot.filename)
+                )
+                permanent_url = log_msg.attachments[0].url
+
+                async with get_db() as db:
+                    await db.execute("UPDATE activity_proofs SET proof_url=? WHERE user_id=? AND event_id=? AND submitted_at=?", (permanent_url, interaction.user.id, event_id, now))
+                    await db.commit()
+
+            except aiohttp.ClientError as e:
+                log.error("Failed to download proof image: %s", e)
+            except discord.HTTPException as e:
+                log.error("Failed to rehost proof: %s", e)
+
+        await interaction.followup.send(
+            f"✅ Proof submitted!\nChallenge type: **{challenge_type}**\n"
+            f"Keep it up! Next proof in 1 hour. 🔥",
+            ephemeral=True
+        )
 
 async def setup(bot):
     await bot.add_cog(GamificationCog(bot))
