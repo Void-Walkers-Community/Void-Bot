@@ -40,9 +40,17 @@ async def _dm(bot, user_id, *, text=None, embed=None):
     except Exception as e:
         log.error("DM to %s failed: %s", user_id, e)
 
+
 class GamificationCog(commands.Cog, name="Gamification"):
+
     def __init__(self, bot):
         self.bot = bot
+        self.event_start_checker.start()
+        self.proof_reminder.start()
+
+    def cog_unload(self):
+        self.event_start_checker.cancel()
+        self.proof_reminder.cancel()
 
     @app_commands.command(name="clockin", description="Clock in to start tracking your CTF activity")
     async def clockin(self, interaction: discord.Interaction):
@@ -270,6 +278,88 @@ class GamificationCog(commands.Cog, name="Gamification"):
             app_commands.Choice(name=f"{r['name']} (ID: {r['id']})", value=r["id"])
             for r in rows if current.lower() in r["name"].lower()
         ][:25]
+
+
+    @tasks.loop(minutes=1)
+    async def event_start_checker(self):
+        now = int(time.time())
+        async with get_db() as db:
+            cur = await db.execute("SELECT id, name, ctftime_link, start_ts FROM events WHERE notified=0")
+            events = await cur.fetchall()
+            for event in events:
+                event_id = event["id"]
+                if abs(now - event["start_ts"]) <= 60:
+                    cur2 = await db.execute("SELECT user_id FROM event_selected WHERE event_id=?", (event_id,))
+                    for player in await cur2.fetchall():
+                        await _dm(
+                            self.bot, player["user_id"],
+                            embed=discord.Embed(
+                                title=f"🚨 {event['name']} has started!",
+                                description=f"The CTF is now live!\n\n{event['ctftime_link']}",
+                                color=0xff0000
+                            )
+                        )
+                    await db.execute("UPDATE events SET notified=1 WHERE id=?", (event_id,))
+            await db.commit()
+
+    @event_start_checker.before_loop
+    async def before_start_checker(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def proof_reminder(self):
+        now = int(time.time())
+        async with get_db() as db:
+            cur = await db.execute("SELECT id, user_id, clock_in_time, event_id FROM clock_sessions WHERE is_active=1")
+            sessions = await cur.fetchall()
+            for session in sessions:
+                session_id    = session["id"]
+                user_id       = session["user_id"]
+                clock_in_time = session["clock_in_time"]
+                event_id      = session["event_id"]
+
+                cur2 = await db.execute("SELECT submitted_at FROM activity_proofs WHERE session_id=? ORDER BY submitted_at DESC LIMIT 1", (session_id,))
+                last_proof = await cur2.fetchone()
+                last_time  = last_proof["submitted_at"] if last_proof else clock_in_time
+                elapsed    = now - last_time
+
+                if 3600 <= elapsed < 3660:
+                    await _dm(
+                        self.bot, user_id,
+                        text=(
+                            "⏰ **Proof reminder!**\n"
+                            "1 hour has passed! Submit your proof using `/proof`\n"
+                            "You have **10 minutes** before you are clocked out automatically."
+                        )
+                    )
+                elif 3900 <= elapsed < 3960:
+                    await _dm(
+                        self.bot, user_id,
+                        text=(
+                            "⚠️ **Last warning!**\n"
+                            "5 minutes left! Submit your proof using `/proof`\n"
+                            "If you don't submit in 5 minutes, you will be **automatically clocked out**."
+                        )
+                    )
+                elif elapsed >= 4200:
+                    credited = max(0, (last_time - clock_in_time) // 60)
+                    await db.execute("UPDATE clock_sessions SET clock_out_time=?, is_active=0 WHERE id=?", (now, session_id))
+                    await _upsert_minutes(db, user_id, event_id, credited)
+                    hours, mins = divmod(credited, 60)
+                    await _dm(
+                        self.bot, user_id,
+                        text=(
+                            "🔴 **Automatically clocked out!**\n"
+                            "You did not submit proof in time.\n"
+                            f"Your recorded active time: **{hours}h {mins}m**\n"
+                            "Use `/clockin` to start a new session."
+                        )
+                    )
+            await db.commit()
+
+    @proof_reminder.before_loop
+    async def before_proof_reminder(self):
+        await self.bot.wait_until_ready()
 
 async def setup(bot):
     await bot.add_cog(GamificationCog(bot))
