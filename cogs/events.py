@@ -10,6 +10,8 @@ from config import APPLICATION_CHANNEL_ID
 from database import get_db
 
 SNOWFLAKE_RE = re.compile(r"\b\d{17,20}\b")
+CTFTIME_RE = re.compile(r"^https://ctftime\.org/")
+
 
 class EventView(discord.ui.View):
     def __init__(self, event_id, event_name, start_ts, end_ts):
