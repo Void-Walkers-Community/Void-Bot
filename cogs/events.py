@@ -9,8 +9,17 @@ from discord.ext import commands
 from config import APPLICATION_CHANNEL_ID
 from database import get_db
 
+import logging
+log = logging.getLogger(__name__)
+
 SNOWFLAKE_RE = re.compile(r"\b\d{17,20}\b")
 CTFTIME_RE = re.compile(r"^https://ctftime\.org/")
+
+def parse_time(time_str: str) -> int:
+    try:
+        return int(datetime.strptime(time_str.strip(), "%d/%m/%y, %I:%M %p").timestamp())
+    except ValueError:
+        raise ValueError(f"Invalid time format. Use: `15/3/26, 9:41 PM`")
 
 
 class EventView(discord.ui.View):
